@@ -31,34 +31,20 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const staleCommit = 'c25b2995fb337ff73028c68a958e7ce327f00049';
-            try {
-              await github.request(
-                'POST /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}/cancel',
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pages_deployment_id: staleCommit
-                }
-              );
-              core.info('Canceled the stale Pages deployment.');
-            } catch (error) {
-              if (error.status !== 404 && error.status !== 409) throw error;
-              core.info('The stale Pages deployment is already inactive.');
-            }
-
             const { data: deployments } = await github.request(
               'GET /repos/{owner}/{repo}/deployments',
               {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                sha: staleCommit,
                 environment: 'github-pages',
                 per_page: 100
               }
             );
 
-            for (const deployment of deployments.filter(item => item.sha === staleCommit)) {
+            let cleared = 0;
+            for (const deployment of deployments) {
+              if (deployment.sha === context.sha) continue;
+
               const { data: statuses } = await github.request(
                 'GET /repos/{owner}/{repo}/deployments/{deployment_id}/statuses',
                 {
@@ -68,20 +54,36 @@ jobs:
                   per_page: 1
                 }
               );
-              if (statuses[0]?.state !== 'inactive') {
+              const state = statuses[0]?.state;
+              if (state !== 'queued' && state !== 'in_progress') continue;
+
+              try {
                 await github.request(
-                  'POST /repos/{owner}/{repo}/deployments/{deployment_id}/statuses',
+                  'POST /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}/cancel',
                   {
                     owner: context.repo.owner,
                     repo: context.repo.repo,
-                    deployment_id: deployment.id,
-                    state: 'inactive',
-                    description: 'Cleared stale Pages deployment before publishing.'
+                    pages_deployment_id: deployment.sha
                   }
                 );
-                core.info('Marked the stale GitHub deployment inactive.');
+              } catch (error) {
+                if (error.status !== 404 && error.status !== 409) throw error;
               }
+
+              await github.request(
+                'POST /repos/{owner}/{repo}/deployments/{deployment_id}/statuses',
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  deployment_id: deployment.id,
+                  state: 'inactive',
+                  description: 'Canceled stale Pages deployment before publishing.'
+                }
+              );
+              cleared += 1;
             }
+
+            core.info('Cleared ' + cleared + ' stale Pages deployment(s).');
             await new Promise(resolve => setTimeout(resolve, 3000));
       - name: Upload site
         uses: actions/upload-pages-artifact@v4
